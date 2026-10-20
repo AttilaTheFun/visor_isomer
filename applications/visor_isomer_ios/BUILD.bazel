@@ -1,0 +1,286 @@
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
+load("@rules_apple//apple:ios.bzl", "ios_application")
+load("@isomer//swift_ffi/rules:swift_wasm_library.bzl", "swift_wasm_library")
+load("@isomer//swift_ffi/rules:swift_wasm_reactor.bzl", "transition_binary", "wasm_export_list")
+load("@isomer//tools/wasm:defs.bzl", "ISOMER_HOST_ENTRIES", "embedded_xip_aot", "icu_data_library")
+load("@rules_swift//swift:swift.bzl", "swift_binary", "swift_library")
+load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcode_provisioning_profile")
+load("@visor_signing//:signing.bzl", "TEAM_ID")
+load("//tools/wasm:defs.bzl", "wasm_resource")
+
+package(default_visibility = ["//visibility:public"])
+
+# The compiled build (applications/visor_isomer_compiled_ios) signs as this one.
+exports_files([
+    "VisorIsomer.entitlements",
+    "VisorIsomerServices.swift",
+])
+
+# Visor for iOS 15 as wasm (com.LoganShire.VisorIsomer), the pilot: the
+# client compiled to a wasm reactor, run by isomer's WasmView in a native
+# iOS 15 shell that serves it sockets, HTTP and settings
+# (VisorIsomerServices.swift). Blue visor icon. Since 0.32 the blue Visor
+# that ships is the compiled one (applications/visor_isomer_compiled_ios, iOS
+# 16); this build is how Visor runs on iOS 15 until that one does.
+#
+#   bazel build //applications/visor_isomer_ios:visor_isomer_ios \
+#       --ios_multi_cpus=sim_arm64     # or arm64, for a device
+#
+# The app interprets the bundled .wasm: a change to the client rebuilds what
+# changed and nothing more. With --config=aot it runs the reactor compiled
+# ahead of time instead (wamrc, three to four minutes for each configuration
+# and every change to the .wasm), and carries only that: to interpret, build
+# without it. On the simulator the AOT tier loads several times faster than
+# the interpreter and uses half its CPU over a launch.
+
+# Native-Swift host bindings for the client's services (the bridges in
+# //libraries/visor_services_ffi), for a native app that runs the client as a
+# wasm reactor and serves those services itself.
+swift_wasm_library(
+    name = "visor_services_host",
+    host_module_name = "VisorServicesHost",
+    module_name = "VisorServicesFFI",
+    swift = "//libraries/visor_services_ffi",
+    target_compatible_with = select({
+        "@platforms//os:macos": [],
+        "@platforms//os:ios": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+# --- The client, as a wasm reactor -----------------------------------------
+
+# The client's app archive for the reactor: the same App.swift the web and
+# Android build (it installs the bridged services and shows VisorRootView).
+# `alwayslink` + `-parse-as-library`: the @main is reached only through the
+# reactor's `__main_argc_argv` trampoline, which links after this archive.
+swift_library(
+    name = "client_lib",
+    srcs = ["//applications/visor_web:App.swift"],
+    alwayslink = True,
+    copts = ["-parse-as-library"],
+    module_name = "VisorIsomerClient",
+    tags = ["manual"],
+    deps = [
+        "//libraries/visor_services_ffi",
+        "@visor//libraries/visor_client",
+        "@visor//libraries/visor_services",
+        "@visor//libraries/visor_ui",
+        "@swiftpkg_agent_ui//:AgentUI",
+        "@isomer//wasm/libraries/swift_ui",
+        "@isomer//wasm/libraries/swift_ui:isomer_bridge",
+    ],
+)
+
+# The reactor: isomer's iso_hot bridge (the ABI WasmView drives) + the
+# client, linked twice. First with every symbol exported and nothing
+# dropped, only to read which exports the hosts call (swift_ffi's
+# wasm_export_list: swift_ffi's entries, the bridge's, what WAMR reads);
+# then, the one shipped, exporting just those and dropping whatever they
+# do not reach. Exported whole, the module kept every function and value in
+# the program (144,233 exports, a 10 MB export section). Its function names
+# (9.6 MB) are kept only for the interpreter's profiler
+# (`--define wamr_profile=1`). The 16 MiB stack matches isomer's other
+# reactors.
+_REACTOR_LINKOPTS = [
+    "-Xlinker",
+    "-z",
+    "-Xlinker",
+    "stack-size=16777216",
+    # Memory enough for a long session from the start: each growth cost the
+    # interpreter milliseconds (84 while scrolling a 200-row thread), and
+    # WAMR maps the whole range up front anyway (pages unused are not
+    # resident).
+    "-Xlinker",
+    "--initial-memory=268435456",
+]
+
+_REACTOR_DEPS = [
+    ":client_lib",
+    # The iso_hot entries a host calls (isomer's, a library of its own since
+    # 0.31: it reads the runtime's package plumbing).
+    "@isomer//wasm/libraries/swift_ui:hot_bridge",
+    "//libraries/visor_services_ffi",
+    "@isomer//wasm/libraries/swift_ui",
+    "@isomer//wasm/libraries/swift_ui:isomer_bridge",
+]
+
+swift_binary(
+    name = "client_reactor_all",
+    copts = [
+        "-enable-experimental-feature",
+        "Extern",
+    ],
+    linkopts = [
+        "-Xlinker",
+        "--export-all",
+        "-Xlinker",
+        "--no-gc-sections",
+    ] + _REACTOR_LINKOPTS,
+    linkshared = True,
+    # (Its own name: two modules of one name in a package collide. The
+    # exports read from it are C names, the same in both.)
+    module_name = "visor_reactor_all",
+    tags = ["manual"],
+    deps = _REACTOR_DEPS,
+)
+
+transition_binary(
+    name = "visor_all.wasm",
+    binary = ":client_reactor_all",
+    platform = "@isomer//swift_ffi/rules:wasm32-wasip1",
+    tags = ["manual"],
+)
+
+wasm_export_list(
+    name = "reactor_exports",
+    entries = ISOMER_HOST_ENTRIES,
+    wasm = ":visor_all.wasm",
+)
+
+# ICU's data less legacy character sets and the word dictionaries of
+# Chinese, Japanese and the languages of Southeast Asia (isomer's ICU_DROP:
+# 34 -> 25 MB); every locale's formats stay.
+icu_data_library(
+    name = "icu_data",
+    wasm = ":visor_all.wasm",
+)
+
+swift_binary(
+    name = "client_reactor",
+    additional_linker_inputs = [":reactor_exports"],
+    copts = [
+        "-enable-experimental-feature",
+        "Extern",
+    ],
+    linkopts = [
+        "-Xlinker",
+        "--gc-sections",
+        "@$(location :reactor_exports)",
+    ] + _REACTOR_LINKOPTS + select({
+        ":profile": [],
+        "//conditions:default": [
+            "-Xlinker",
+            "--strip-all",
+        ],
+    }),
+    linkshared = True,
+    module_name = "visor_reactor",
+    tags = ["manual"],
+    deps = _REACTOR_DEPS + [":icu_data"],
+)
+
+# `--define wamr_profile=1`: the interpreter's profiler, which names
+# functions from the module's name section.
+config_setting(
+    name = "profile",
+    define_values = {"wamr_profile": "1"},
+)
+
+transition_binary(
+    name = "visor.wasm",
+    binary = ":client_reactor",
+    platform = "@isomer//swift_ffi/rules:wasm32-wasip1",
+    tags = ["manual"],
+)
+
+# The interpreted tier, bundled as the app's "visor" resource: the plain
+# .wasm, built as a top-level build would (see //tools/wasm:defs.bzl) — the
+# app's iOS 15 setting would otherwise reach AgentUI. Not isomer's
+# reactor_artifact, which under --define wamr_aot=1 packages a wamrc .aot
+# that a device could not run (it maps code at run time).
+wasm_resource(
+    name = "visor_resource",
+    srcs = [":visor.wasm"],
+)
+
+# The ahead-of-time tier: the reactor compiled to native code by `wamrc --xip`
+# (no text relocations) and linked into the app's signed __TEXT segment, where
+# iOS lets it execute — an app may not map code it loads at run time. WAMR
+# runs the image in place (WamrRuntime.embeddedImage), and the app bundles no
+# .wasm beside it (ios_application's resources). Linked, and WAMR built with
+# its AOT loader, only under --config=aot (see app_lib).
+embedded_xip_aot(
+    name = "visor_embedded_aot",
+    wasm = ":visor_resource",
+)
+
+# --- The iOS 15 shell --------------------------------------------------------
+
+swift_library(
+    name = "app_lib",
+    srcs = [
+        "VisorIsomerApp.swift",
+        "VisorIsomerServices.swift",
+    ],
+    module_name = "VisorIsomerApp",
+    tags = ["manual"],
+    # Nothing of Visor's own here: its Apple libraries need iOS 18 (see
+    # VisorIsomerServices.swift); the client is in the reactor.
+    deps = [
+        ":visor_services_host",
+        "@isomer//apple/libraries/wasm_view",
+        "@isomer//shared/wasm_host:wamr_runtime",
+    ] + select({
+        # --config=aot: the reactor's AOT image, run in place.
+        ":aot": [
+            ":visor_embedded_aot",
+            "@isomer//tools/wasm:embedded_aot_shim",
+        ],
+        # Otherwise no image (wamrc takes minutes a build): the app
+        # interprets the bundled .wasm.
+        "//conditions:default": [],
+    }),
+)
+
+# `--config=aot` (`--define=wamr_aot=1`): the app with its AOT image.
+config_setting(
+    name = "aot",
+    define_values = {"wamr_aot": "1"},
+)
+
+# Device signing: the team's wildcard development profile (tools/mint_profile
+# in visor makes it). Simulator builds ignore it.
+local_provisioning_profile(
+    name = "local_profile",
+    profile_name = "iOS Team Provisioning Profile: *",
+    tags = ["manual"],
+    team_id = TEAM_ID,
+)
+
+xcode_provisioning_profile(
+    name = "xcode_managed_profile",
+    managed_by_xcode = True,
+    provisioning_profile = ":local_profile",
+    tags = ["manual"],
+)
+
+ios_application(
+    name = "visor_isomer_ios",
+    app_icons = ["//artwork/visor_isomer_icon:app_icon"],
+    bundle_id = "com.LoganShire.VisorIsomer",
+    # Its own app ID (a wildcard profile's entitlements would otherwise be
+    # copied as-is, application-identifier TEAM.*).
+    # (Device builds only: the simulator's has no team prefix to fill in.)
+    entitlements = select({
+        "@apple_support//constraints:device": "VisorIsomer.entitlements",
+        "//conditions:default": None,
+    }),
+    families = [
+        "iphone",
+        "ipad",
+    ],
+    infoplists = ["Info.plist"],
+    minimum_os_version = "15.0",
+    provisioning_profile = select({
+        "@apple_support//constraints:device": ":xcode_managed_profile",
+        "//conditions:default": None,
+    }),
+    # The module itself only for the interpreter: an AOT build carries the
+    # image alone (83 MB fewer, and not read at each launch).
+    resources = select({
+        ":aot": [],
+        "//conditions:default": [":visor_resource"],
+    }),
+    deps = [":app_lib"],
+)

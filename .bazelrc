@@ -1,0 +1,77 @@
+common --enable_bzlmod
+
+# isomer's hermetic Android NDK/SDK (needed to resolve its toolchains,
+# even when only building for Apple platforms).
+common --repo_env=ACCEPTED_ANDROID_NDK_LICENSE_VERSION=r27c
+common --repo_env=ACCEPTED_ANDROID_SDK_LICENSE_VERSION=35
+common --android_platforms=@rules_android//:arm64-v8a
+
+# rules_java's hermetic remote JDK 17 for rules_android's Java actions.
+common --java_language_version=17
+common --java_runtime_version=remotejdk_17
+common --tool_java_language_version=17
+common --tool_java_runtime_version=remotejdk_17
+
+# The swift_ffi macro plugin is built by the Xcode Swift toolchain; loading it
+# inside the sandbox fails to reach the Swift runtime dylibs, so Swift
+# compiles run local.
+build --strategy=SwiftCompile=local
+
+build --macos_minimum_os=15.0
+# rules_swift_package_manager wraps every package target in a minimum-OS
+# transition keyed on --apple_platform_type (macos by default). With the flags
+# already at the AgentUI package's value (macOS 14) the transition is a no-op,
+# so the package and everything beneath it stay in the consumer's
+# configuration; without it swift_ffi and isomer build twice and clang
+# refuses the second SwiftABI module map.
+build --minimum_os_version=15.0
+
+build --host_macos_minimum_os=15.0
+build --ios_minimum_os=18.0
+
+build --apple_generate_dsym=false
+
+test --test_output=errors
+
+# visor's libraries import SwiftUI through a label flag; here it is isomer's.
+build --@visor//:swift_ui=@isomer//:swift_ui
+
+# Isomer's Foundation on wasm and Android for visor's libraries too (their
+# label flag; Apple builds keep Apple's), with FoundationInternationalization
+# for the dates and numbers the client formats. One module named Foundation
+# in the graph: with the Swift SDK's beside Isomer's, the two link into one
+# binary and their symbols collide.
+build --@visor//:foundation=@isomer//:foundation
+build --@isomer//foundation:internationalization
+
+# visor's pasteboard and camera (their label flags; visor's own are AppKit's
+# and UIKit's): Isomer's Clipboard and cameraCapture, which every Isomer host
+# answers (libraries/visor_{pasteboard,camera}_isomer).
+build --@visor//:pasteboard=//libraries/visor_pasteboard_isomer
+build --@visor//:camera=//libraries/visor_camera_isomer
+
+# The VisorIsomer pilot's ahead-of-time tier (applications/visor_isomer_ios):
+# links the reactor image wamrc makes into the app's signed __TEXT segment
+# and compiles WAMR's AOT loader into the wasm host. Without it (the default)
+# the app interprets the bundled .wasm, and no build waits on wamrc.
+#
+# wamrc at LLVM's -O1, not its default -O3: on the simulator the image ran
+# entering a chat as fast (67 ms of guest time against 81, within noise) and
+# wamrc took 210 s instead of 240 (isomer's WAMR patches had already cut it
+# from ~590). --define=wamr_aot_opt=0 builds in about a minute, for code
+# about twice as slow (still about thirteen times the interpreter's speed).
+build:aot -c opt --define=wamr_aot=1 --define=wamr_aot_opt=1
+
+# The builder's own settings, not checked in: the Apple team for device
+# builds (`common --repo_env=VISOR_TEAM_ID=<team>`, read by visor's signing
+# extension).
+try-import %workspace%/.bazelrc.user
+
+# Optimized by default: what is built here is to be used (Updater builds,
+# the web site), and Visor Isomer's guest and the interpreter that runs it
+# are its hot path — a fastbuild app ran its frames several times slower.
+build -c opt
+
+# VisorIsomer interpreted: what a plain build makes now; kept for the
+# commands that name it.
+build:interp -c opt

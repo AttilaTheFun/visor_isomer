@@ -1,0 +1,160 @@
+load("@isomer//swift_ffi/rules:swift_wasm_reactor.bzl", "transition_binary", "wasm_export_list")
+load("@isomer//tools/wasm:defs.bzl", "ISOMER_HOST_ENTRIES")
+load("@rules_apple//apple:ios.bzl", "ios_application")
+load("@rules_swift//swift:swift.bzl", "swift_binary", "swift_library")
+load("//tools/wasm:defs.bzl", "threads_wasm_resource")
+
+package(default_visibility = ["//visibility:public"])
+
+# Visor as wasm on WasmKit (com.LoganShire.VisorIsomer, the blue Visor): the
+# client as a wasm reactor, interpreted by WasmKit (isomer's WasmKitRuntime)
+# in the native shell applications/visor_isomer_ios serves it from, at
+# iOS 18 (WasmKit's Synchronization). Its reactor is built twice: for
+# wasm32-unknown-wasip1-threads (shared memory; the client's tasks on a pool
+# of guest threads, its main actor on the app's main thread) and as the
+# single-threaded one the WAMR build bundles; the app runs the threaded one
+# where WasmKit can make a shared memory.
+#
+#   bazel build //applications/visor_isomer_wasmkit_ios:visor_isomer_wasmkit_ios \
+#       --ios_multi_cpus=sim_arm64     # or arm64, for a device
+
+# --- The threaded reactor ---------------------------------------------------
+
+# The threaded reactor's memory: imported and shared (each guest thread's
+# instance maps the one memory), with the maximum wasi-threads requires.
+# The rest as the single-threaded reactor's (16 MiB stack, 256 MiB from the
+# start).
+_REACTOR_LINKOPTS = [
+    "-Xlinker",
+    "-z",
+    "-Xlinker",
+    "stack-size=16777216",
+    "-Xlinker",
+    "--initial-memory=268435456",
+    "-Xlinker",
+    "--import-memory",
+    "-Xlinker",
+    "--export-memory",
+    "-Xlinker",
+    "--shared-memory",
+    "-Xlinker",
+    "--max-memory=1073741824",
+]
+
+_REACTOR_DEPS = [
+    "//applications/visor_isomer_ios:client_lib",
+    "@isomer//wasm/libraries/swift_ui:hot_bridge",
+    "//libraries/visor_services_ffi",
+    "@isomer//wasm/libraries/swift_ui",
+    "@isomer//wasm/libraries/swift_ui:isomer_bridge",
+]
+
+# Linked twice, as the single-threaded reactor is: once exporting
+# everything, to read the entries the hosts call; then the one shipped.
+swift_binary(
+    name = "client_reactor_threads_all",
+    copts = [
+        "-enable-experimental-feature",
+        "Extern",
+    ],
+    linkopts = [
+        "-Xlinker",
+        "--export-all",
+        "-Xlinker",
+        "--no-gc-sections",
+    ] + _REACTOR_LINKOPTS,
+    linkshared = True,
+    module_name = "visor_reactor_threads_all",
+    tags = ["manual"],
+    deps = _REACTOR_DEPS,
+)
+
+transition_binary(
+    name = "visor_threads_all.wasm",
+    binary = ":client_reactor_threads_all",
+    platform = "@isomer//swift_ffi/rules:wasm32-wasip1-threads",
+    tags = ["manual"],
+)
+
+wasm_export_list(
+    name = "reactor_threads_exports",
+    entries = ISOMER_HOST_ENTRIES,
+    wasm = ":visor_threads_all.wasm",
+)
+
+swift_binary(
+    name = "client_reactor_threads",
+    additional_linker_inputs = [":reactor_threads_exports"],
+    copts = [
+        "-enable-experimental-feature",
+        "Extern",
+    ],
+    linkopts = [
+        "-Xlinker",
+        "--gc-sections",
+        "@$(location :reactor_threads_exports)",
+        "-Xlinker",
+        "--strip-all",
+    ] + _REACTOR_LINKOPTS,
+    linkshared = True,
+    module_name = "visor_reactor_threads",
+    tags = ["manual"],
+    deps = _REACTOR_DEPS,
+)
+
+transition_binary(
+    name = "visor_threads.wasm",
+    binary = ":client_reactor_threads",
+    platform = "@isomer//swift_ffi/rules:wasm32-wasip1-threads",
+    tags = ["manual"],
+)
+
+# Without FoundationInternationalization (see threads_wasm_resource): the
+# threads SDK has no ICU, so this reactor carries none.
+threads_wasm_resource(
+    name = "visor_threads_resource",
+    srcs = [":visor_threads.wasm"],
+)
+
+# --- The shell ----------------------------------------------------------------
+
+swift_library(
+    name = "app_lib",
+    srcs = [
+        "VisorIsomerWasmKitApp.swift",
+        "//applications/visor_isomer_ios:VisorIsomerServices.swift",
+    ],
+    module_name = "VisorIsomerWasmKitApp",
+    tags = ["manual"],
+    deps = [
+        "//applications/visor_isomer_ios:visor_services_host",
+        "@isomer//apple/libraries/wasm_view",
+        "@isomer//shared/wasm_host:wasm_runtime",
+        "@isomer//shared/wasm_host:wasmkit_runtime",
+    ],
+)
+
+ios_application(
+    name = "visor_isomer_wasmkit_ios",
+    app_icons = ["//artwork/visor_isomer_icon:app_icon"],
+    bundle_id = "com.LoganShire.VisorIsomer",
+    entitlements = select({
+        "@apple_support//constraints:device": "//applications/visor_isomer_ios:VisorIsomer.entitlements",
+        "//conditions:default": None,
+    }),
+    families = [
+        "iphone",
+        "ipad",
+    ],
+    infoplists = ["Info.plist"],
+    minimum_os_version = "18.0",
+    provisioning_profile = select({
+        "@apple_support//constraints:device": "//applications/visor_isomer_ios:xcode_managed_profile",
+        "//conditions:default": None,
+    }),
+    resources = [
+        ":visor_threads_resource",
+        "//applications/visor_isomer_ios:visor_resource",
+    ],
+    deps = [":app_lib"],
+)

@@ -1,0 +1,7 @@
+bazel-*
+.build/
+*.xcodeproj
+xcshareddata/
+.DS_Store
+__pycache__/
+.bazelrc.user

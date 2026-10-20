@@ -1,0 +1,274 @@
+"""Visor — remote agent sessions: a Mac menu bar app that runs Claude Code and
+Codex sessions over Tailscale, and a Isomer client that drives them."""
+
+module(
+    name = "visor_isomer",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "apple_support", version = "2.8.0")
+bazel_dep(name = "rules_swift", version = "3.6.1")
+bazel_dep(name = "rules_apple", version = "4.5.3")
+
+# Not a dev_dependency: the iOS app's device signing goes through
+# rules_xcodeproj's Xcode-managed provisioning profile target.
+bazel_dep(name = "rules_xcodeproj", version = "4.1.0")
+
+# --- isomer: the client's SwiftUI (Apple's here, through isomer's
+# --- per-platform `SwiftUI` label) and the wasm/Android hosts for later.
+# The Apple-native app: its libraries are what every host here carries.
+bazel_dep(name = "visor", version = "0.1.0")
+git_override(
+    module_name = "visor",
+    remote = "https://github.com/AttilaTheFun/visor.git",
+    commit = "016a5a5434ba7c41658d952d5862bc383dad74fa",
+)
+# Developing both at once: point at the checkout instead.
+# local_path_override(module_name = "visor", path = "../visor")
+
+# The builder's own Apple team, for device builds of the iOS apps here: the
+# visor module's extension, from VISOR_TEAM_ID in an untracked .bazelrc.user
+# (`common --repo_env=VISOR_TEAM_ID=<team>`); simulator builds need nothing.
+signing = use_extension("@visor//tools/signing:extension.bzl", "signing")
+use_repo(signing, "visor_signing")
+bazel_dep(name = "isomer", version = "0.1.0")
+git_override(
+    module_name = "isomer",
+    remote = "https://github.com/AttilaTheFun/isomer.git",
+    commit = "d715282ea4031b5906d3706e638d67ca64da8117",
+)
+
+# bzlmod honours `*_override` only from the root module, so isomer's own
+# pins have to be repeated here verbatim or its toolchains won't resolve.
+git_override(
+    module_name = "rules_swift",
+    # Fork carrying the metadata-driven wasm Swift SDK support.
+    remote = "https://github.com/AttilaTheFun/rules_swift.git",
+    commit = "308114d6137984df946333776d93a08fc21df66a",
+    # isomer's: a wasi-threads SDK beside the single-threaded one (the
+    # WasmKit blue Visor's reactor is threaded; the web's is not). A copy of
+    # isomer's tools/patches file (patches of a root-only override are the
+    # root module's).
+    patch_strip = 1,
+    patches = [
+        "//tools/patches:rules_swift_wasm_threads_beside.patch",
+        # isomer's: C compiled for wasm gets the Swift SDK's clang resource
+        # directory, so swift_sqlite's amalgamation finds <stdarg.h> there.
+        "//tools/patches:rules_swift_wasm_clang_resource_dir.patch",
+    ],
+)
+
+# Isomer's fork of swift-foundation, from which isomer builds Foundation for
+# the web and Android (not in the Bazel Central Registry; the same commit
+# isomer pins).
+bazel_dep(name = "swift-foundation", version = "6.3.2")
+git_override(
+    module_name = "swift-foundation",
+    remote = "https://github.com/AttilaTheFun/swift-foundation.git",
+    commit = "b04a54975a53d4447ea6ccad0cf6c68e4e2685e0",
+)
+
+# swift_ffi, swift_gpu and swift_map are part of the isomer module
+# (`@isomer//swift_ffi/...` and so on): the one isomer commit above pins them.
+
+# SQLite: swift_sqlite 0.34 (public; the C API as CSQLite, the Swift layer
+# SwiftSQLite; renamed swift_sql in 0.35, which visor takes in 0.36), a Swift
+# package that visor's rules_swift_package_manager graph brings in
+# (@swiftpkg_swift_sqlite), as it brings agent_ui. Its C builds for
+# wasm with the rules_swift patch below (the SDK's clang resource directory).
+
+# flatbuffers' released Swift BUILD glob misses Sources/FlatBuffers/Vectors/
+# and its Foundation use breaks under WASI — same patches isomer applies.
+bazel_dep(name = "flatbuffers", version = "25.12.19")
+single_version_override(
+    module_name = "flatbuffers",
+    patch_strip = 1,
+    patches = [
+        "//tools/patches:flatbuffers_foundation_wasi.patch",
+        "//tools/patches:flatbuffers_swift_vectors.patch",
+    ],
+    version = "25.12.19",
+)
+
+# `single_version_override` is root-only too: flatbuffers' transitive
+# rules_foreign_cc 0.10.1 fails to load under Bazel 9.
+single_version_override(
+    module_name = "rules_foreign_cc",
+    version = "0.15.1",
+)
+
+# isomer's Android cross-compile toolchains. The extension insists on a
+# root-level android.sdk tag even when only the NDK's cc toolchains are used.
+bazel_dep(name = "hermetic_android_toolchains", version = "0.1.1")
+
+android = use_extension("@hermetic_android_toolchains//:extensions.bzl", "android")
+android.sdk(
+    build_tools_version = "35.0.0",
+    version = "35",
+)
+android.ndk(
+    api_level = 28,
+    version = "r27c",
+)
+use_repo(android, "androidndk", "androidsdk")
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+# isomer's web-app macro declares sh_binary dev servers.
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
+# Hermetic swift.org toolchain plus the WebAssembly and Android Swift SDKs
+# isomer's module graph registers.
+swift = use_extension("@rules_swift//swift:extensions.bzl", "swift")
+swift.toolchain(
+    name = "swift_toolchain",
+    swift_version = "6.3.2",
+)
+swift.wasm_sdk()
+# The wasi-threads SDK beside it, for the WasmKit blue Visor's reactor
+# (`@isomer//swift_ffi/rules:wasm32-wasip1-threads`): AttilaTheFun/swift's
+# build of 6.3.2 (branch threads-sdk-6.3.2), as isomer declares it.
+swift.wasm_sdk(
+    sha256 = "dda937f5f31d69ebf8609b430f3818020f5f3e683a72dd91d0875d8c814e0c48",
+    threads = True,
+    url = "https://github.com/AttilaTheFun/swift/releases/download/threads-sdk-6.3.2-1/swift-6.3.2-RELEASE_wasm-threads.artifactbundle.tar.gz",
+)
+swift.android_sdk()
+use_repo(swift, "swift_toolchain")
+
+register_toolchains(
+    "@swift_toolchain//:cc_toolchain_wasm32_xcode",
+    "@swift_toolchain//:swift_toolchain_wasm32_xcode",
+    "@swift_toolchain//:cc_toolchain_wasm32_threads_xcode",
+    "@swift_toolchain//:swift_toolchain_wasm32_threads_xcode",
+    "@swift_toolchain//:swift_toolchain_android_aarch64_xcode",
+    "@swift_toolchain//:swift_toolchain_android_x86_64_xcode",
+)
+
+# A Linux host (GitHub's hosted runners, where CI builds the web client and
+# the Android app and runs the emulator): swift.org's ubuntu24.04 toolchain
+# as the exec Swift toolchain, with the same wasm (stock and threads) and
+# Android SDKs, for x86_64 and aarch64. Fetched only when a Linux host
+# resolves them; ignored on a Mac (their exec constraints).
+register_toolchains(
+    "@swift_toolchain//:swift_toolchain_exec_ubuntu24.04",
+    "@swift_toolchain//:cc_toolchain_wasm32_ubuntu24.04",
+    "@swift_toolchain//:swift_toolchain_wasm32_ubuntu24.04",
+    "@swift_toolchain//:cc_toolchain_wasm32_threads_ubuntu24.04",
+    "@swift_toolchain//:swift_toolchain_wasm32_threads_ubuntu24.04",
+    "@swift_toolchain//:swift_toolchain_android_aarch64_ubuntu24.04",
+    "@swift_toolchain//:swift_toolchain_android_x86_64_ubuntu24.04",
+    "@swift_toolchain//:swift_toolchain_exec_ubuntu24.04-aarch64",
+    "@swift_toolchain//:cc_toolchain_wasm32_ubuntu24.04-aarch64",
+    "@swift_toolchain//:swift_toolchain_wasm32_ubuntu24.04-aarch64",
+    "@swift_toolchain//:cc_toolchain_wasm32_threads_ubuntu24.04-aarch64",
+    "@swift_toolchain//:swift_toolchain_wasm32_threads_ubuntu24.04-aarch64",
+    "@swift_toolchain//:swift_toolchain_android_aarch64_ubuntu24.04-aarch64",
+    "@swift_toolchain//:swift_toolchain_android_x86_64_ubuntu24.04-aarch64",
+)
+
+bazel_dep(name = "rules_android", version = "0.7.3")
+
+rules_android_sdk = use_extension(
+    "@rules_android//rules/android_sdk_repository:rule.bzl",
+    "android_sdk_repository_extension",
+)
+override_repo(rules_android_sdk, "androidsdk")
+
+register_toolchains(
+    "@androidndk//:all",
+    "@androidsdk//:all",
+)
+
+bazel_dep(name = "rules_java", version = "9.3.0")
+bazel_dep(name = "rules_kotlin", version = "2.2.2")
+bazel_dep(name = "rules_python", version = "2.0.2")
+
+# Forward-pin: the transitively-resolved rules_go is too old for Bazel 9 /
+# builds gazelle's repo tools against the host Go.
+bazel_dep(name = "rules_go", version = "0.61.1")
+
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.24.12")
+
+# rules_android's Maven graph. Declared from THIS root (bzlmod's
+# rules_jvm_external cannot read a lock file from a non-root module), merging
+# isomer's contribution; the lock is a vendored copy of isomer's.
+#   REPIN=1 bazel run @rules_android_maven//:pin
+bazel_dep(name = "rules_jvm_external", version = "7.1")
+
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    name = "rules_android_maven",
+    aar_import_bzl_label = "@rules_android//rules:rules.bzl",
+    known_contributing_modules = [
+        "rules_android",
+        "isomer",
+    ],
+    lock_file = "//:rules_android_maven_install.json",
+    repositories = [
+        "https://maven.google.com",
+        "https://repo1.maven.org/maven2",
+    ],
+    use_starlark_android_rules = True,
+    version_conflict_policy = "pinned",
+)
+use_repo(maven, "rules_android_maven")
+
+android_tools = use_extension("@isomer//tools/android:extensions.bzl", "android_tools")
+use_repo(
+    android_tools,
+    "android_build_tools",
+    "android_emulator",
+    "android_platform_jar",
+    "android_platform_tools",
+    "android_system_image",
+    "hermetic_jdk",
+    "kotlin_compiler",
+)
+
+# --- AgentUI: the agent chat page (AgentView) and the split view / inspector
+# --- containers, a SwiftPM package consumed through rules_swift_package_manager.
+bazel_dep(name = "rules_swift_package_manager", version = "1.20.0")
+
+# A package builds at its importer's minimum OS when that is higher
+# (tools/patches/rspm_importer_minimum_os.patch): AgentUI says iOS 16 here (the
+# patch_cmds below) for the compiled blue Visor, and the red Visor, at iOS 18,
+# still builds it at 18 with Apple's SwiftUI (the snapshots' iOS target).
+single_version_override(
+    module_name = "rules_swift_package_manager",
+    patch_strip = 1,
+    patches = ["//tools/patches:rspm_importer_minimum_os.patch"],
+)
+
+swift_deps = use_extension(
+    "@rules_swift_package_manager//:extensions.bzl",
+    "swift_deps",
+)
+# agent_ui is declared by visor's own extension use; here its targets are
+# told where SwiftUI and Foundation come from on the hosts isomer adds
+# (isomer's on the web and Android, Apple's on Apple platforms).
+swift_deps.configure_package(
+    name = "agent_ui",
+    # The blue Visor compiled against Isomer's frameworks
+    # (applications/visor_isomer_compiled_ios) runs on iOS 16: its SwiftUI and
+    # Observation are Isomer's, available there. AgentUI's package says iOS
+    # 18 (Apple's SwiftUI), and rules_swift_package_manager refuses a package
+    # to an app below its minimum, so here it says 16 (an app above it builds
+    # it at its own: the override above).
+    patch_cmds = ["sed -i.orig 's/\\.iOS(\"18\\.0\")/.iOS(\"16.0\")/' Package.swift"],
+    target_deps = {
+        "AgentUI": ["@@isomer+//:swift_ui", "@@isomer+//:foundation"],
+        "InboxUI": ["@@isomer+//:swift_ui", "@@isomer+//:foundation"],
+        "MessagesCore": ["@@isomer+//:swift_ui", "@@isomer+//:foundation"],
+        "MessagesUI": ["@@isomer+//:swift_ui", "@@isomer+//:foundation"],
+        "NavigationUI": ["@@isomer+//:swift_ui", "@@isomer+//:foundation"],
+    },
+)
+
+use_repo(
+    swift_deps,
+    "swift_package",
+    "swiftpkg_agent_ui",
+)
