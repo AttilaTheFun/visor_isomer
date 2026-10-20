@@ -8,8 +8,8 @@ exports_files(["App.swift"])
 
 # The client on the web: the same VisorUI screens, compiled to wasm against
 # isomer's SwiftUI, in a static site (index.html brings the socket and
-# settings services in JavaScript). Published to the visor_isomer_releases Pages
-# repo (tools/publish_web.sh). From an https page the host must be reached
+# settings services in JavaScript). Served by this repository's Pages from
+# each release (tools/package_site.sh). From an https page the host must be reached
 # over wss:// — the menu bar app's Tailscale Serve option.
 swift_library(
     name = "app_lib",
