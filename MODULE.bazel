@@ -37,7 +37,7 @@ bazel_dep(name = "isomer", version = "0.1.0")
 git_override(
     module_name = "isomer",
     remote = "https://github.com/AttilaTheFun/isomer.git",
-    commit = "e36855394308ac90f55cf0ecd3498e58dcf63b01",
+    commit = "e9a9405222e272ddf6ccaf2344c74d4fad4dfb02",
 )
 
 # bzlmod honours `*_override` only from the root module, so isomer's own
