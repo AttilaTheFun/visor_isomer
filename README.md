@@ -25,8 +25,10 @@ each other platform needs:
   dictionary (the browser); `installVisorBridges` takes them directly
   (Android's Kotlin).
 - **applications/visor_web** — the browser: index.html implements the
-  bridges over WebSocket, fetch and localStorage. Published to
-  https://attilathefun.github.io/visor_isomer_releases/ with tools/publish_web.sh.
+  bridges over WebSocket, fetch and localStorage. Served by this
+  repository's GitHub Pages at https://attilathefun.github.io/visor_isomer/:
+  each release carries the site (tools/package_site.sh) and
+  .github/workflows/pages.yml deploys it when the release is published.
 - **applications/visor_android** — VisorServices.kt implements them over an
   SSL socket (a small RFC 6455 client of its own), HttpURLConnection and
   SharedPreferences.
@@ -51,7 +53,7 @@ each other platform needs:
     bazel build //applications/visor_web
     bazel build //applications/visor_android
     bazel build //applications/visor_isomer_compiled_ios --ios_multi_cpus=sim_arm64
-    tools/publish_web.sh <checkout of AttilaTheFun/visor_isomer_releases>
+    tools/package_site.sh    # visor-isomer-site.tar.gz, for a release
 
 Developing visor and this module together: swap the `git_override` in
 MODULE.bazel for the commented `local_path_override`.
