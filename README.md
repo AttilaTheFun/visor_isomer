@@ -55,8 +55,9 @@ each other platform needs:
     bazel build //applications/visor_isomer_compiled_ios --ios_multi_cpus=sim_arm64
     tools/package_site.sh    # visor-isomer-site.tar.gz, for a release
 
-Developing visor and this module together: swap the `git_override` in
-MODULE.bazel for the commented `local_path_override`.
+Developing visor and this module together: add the commented
+`local_path_override` in MODULE.bazel (or `--override_module=visor=<checkout>`
+in an untracked .bazelrc.user); a release takes visor and isomer by version.
 
 ## License
 

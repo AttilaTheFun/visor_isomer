@@ -13,11 +13,17 @@ pull request's head. No attribution lines in commits.
 
 ## Rules
 
-- Dependencies are pinned: isomer and rules_swift by `git_override` commit
-  in MODULE.bazel (repeat isomer's own root-only overrides verbatim: bzlmod
-  honours overrides from the root only), visor by its release's commit.
-  agent_ui is not pinned here: it comes through visor, at the revision
-  visor's Package.swift names. At a release every pin is a tag's commit.
+- Dependencies are pinned by released version: visor and isomer as Bazel
+  modules from the project's registry (AttilaTheFun/bazel_registry, listed
+  before the BCR in .bazelrc), with isomer's rules_swift and swift-foundation
+  forks, which come from there too. Repeat isomer's other root-only
+  overrides verbatim (flatbuffers' patches, rules_foreign_cc: bzlmod honours
+  overrides from the root only). agent_ui and swift_sql are not pinned here:
+  they come through visor, at the versions its Package.swift names. A branch
+  may pin a commit while what it needs is in development; a release may not:
+  tools/released_pins.sh says so, and CI's `pins` job runs it on main's
+  commits, which Reviews checks before a release. App versions are the
+  release's (0.36.1 (N)).
 - No Apple team ids, certificates, provisioning profiles or device UDIDs in
   the repository: the team comes from the builder's own `.bazelrc.user`
   (`common --repo_env=VISOR_TEAM_ID=<team>`, visor's tools/signing), which

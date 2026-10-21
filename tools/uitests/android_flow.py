@@ -17,7 +17,8 @@ with an approval waiting, a question), so it needs no server:
                   then on; Send puts the sheet away
 Each orientation is a ui-test manifest (target android-lab-flow or
 android-flow) under <dir>, for tools/snapshots/publish_review.py. Exit 1 when
-a step failed.
+a step failed. VISOR_SNAPSHOT_BAZEL_FLAGS adds Bazel flags to the build, as
+for the snapshots (an --override_module to test an unpinned dependency).
 """
 import argparse, json, os, re, subprocess, sys, time
 import xml.etree.ElementTree as ElementTree
@@ -25,6 +26,7 @@ import xml.etree.ElementTree as ElementTree
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PACKAGE = "com.loganshire.visor"
 REMOTE = "/sdcard/visor-flow.mp4"
+EXTRA_FLAGS = os.environ.get("VISOR_SNAPSHOT_BAZEL_FLAGS", "").split()
 
 
 def sh(cmd, check=False):
@@ -173,8 +175,9 @@ def main():
     serial = os.environ.get("ANDROID_SERIAL", "emulator-5554")
     lab = not serial.startswith("emulator-")
     phone = Phone(adb_path(), serial)
-    sh(["bazel", "build", "-c", "opt", "//applications/visor_android:visor_android_apk"], check=True)
-    apk = next(f for f in sh(["bazel", "cquery", "-c", "opt", "--output=files", "//applications/visor_android:visor_android_apk"]).stdout.split()
+    sh(["bazel", "build", "-c", "opt", *EXTRA_FLAGS, "//applications/visor_android:visor_android_apk"], check=True)
+    apk = next(f for f in sh(["bazel", "cquery", "-c", "opt", "--output=files", *EXTRA_FLAGS,
+                              "//applications/visor_android:visor_android_apk"]).stdout.split()
                if f.endswith(".apk") and "_unsigned" not in f)
     sh(phone.a + ["install", "-r", os.path.join(ROOT, apk)], check=True)
     sh_shell(phone.a, "wm", "dismiss-keyguard")
