@@ -15,7 +15,7 @@ bazel_dep(name = "apple_support", version = "2.8.0")
 # graph asks for (visor's 4.1.0, isomer's fork at 3.6.1.isomer.1), so every
 # module gets it.
 bazel_dep(name = "rules_swift", version = "4.1.0.isomer.1")
-bazel_dep(name = "rules_apple", version = "4.5.3")
+bazel_dep(name = "rules_apple", version = "5.1.0")
 
 # Not a dev_dependency: the iOS app's device signing goes through
 # rules_xcodeproj's Xcode-managed provisioning profile target.
@@ -35,12 +35,8 @@ bazel_dep(name = "visor", version = "0.36.1")
 # (`common --repo_env=VISOR_TEAM_ID=<team>`); simulator builds need nothing.
 signing = use_extension("@visor//tools/signing:extension.bzl", "signing")
 use_repo(signing, "visor_signing")
-bazel_dep(name = "isomer", version = "0.1.0")
-git_override(
-    module_name = "isomer",
-    remote = "https://github.com/AttilaTheFun/isomer.git",
-    commit = "e9a9405222e272ddf6ccaf2344c74d4fad4dfb02",
-)
+# isomer by its release's version, from the project's registry.
+bazel_dep(name = "isomer", version = "0.36.0")
 
 # isomer's forks of rules_swift and swift-foundation come by version from the
 # project's registry, as isomer asks for them; only its other root-only
