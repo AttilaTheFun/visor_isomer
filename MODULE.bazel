@@ -9,7 +9,12 @@ module(
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "apple_support", version = "2.8.0")
-bazel_dep(name = "rules_swift", version = "3.6.1")
+# rules_swift from the project's registry: 4.1.0.isomer.1 is upstream's 4.1.0
+# (what visor asks for) with rules_swift#1860 (the wasi-threads SDK variant,
+# not yet merged) and isomer's two patches. It sorts above the releases the
+# graph asks for (visor's 4.1.0, isomer's fork at 3.6.1.isomer.1), so every
+# module gets it.
+bazel_dep(name = "rules_swift", version = "4.1.0.isomer.1")
 bazel_dep(name = "rules_apple", version = "4.5.3")
 
 # Not a dev_dependency: the iOS app's device signing goes through
@@ -19,12 +24,9 @@ bazel_dep(name = "rules_xcodeproj", version = "4.1.0")
 # --- isomer: the client's SwiftUI (Apple's here, through isomer's
 # --- per-platform `SwiftUI` label) and the wasm/Android hosts for later.
 # The Apple-native app: its libraries are what every host here carries.
-bazel_dep(name = "visor", version = "0.1.0")
-git_override(
-    module_name = "visor",
-    remote = "https://github.com/AttilaTheFun/visor.git",
-    commit = "016a5a5434ba7c41658d952d5862bc383dad74fa",
-)
+# visor by its release's version, from the project's registry
+# (AttilaTheFun/bazel_registry, listed before the BCR in .bazelrc).
+bazel_dep(name = "visor", version = "0.36.1")
 # Developing both at once: point at the checkout instead.
 # local_path_override(module_name = "visor", path = "../visor")
 
@@ -40,44 +42,17 @@ git_override(
     commit = "e9a9405222e272ddf6ccaf2344c74d4fad4dfb02",
 )
 
-# bzlmod honours `*_override` only from the root module, so isomer's own
-# pins have to be repeated here verbatim or its toolchains won't resolve.
-git_override(
-    module_name = "rules_swift",
-    # Fork carrying the metadata-driven wasm Swift SDK support.
-    remote = "https://github.com/AttilaTheFun/rules_swift.git",
-    commit = "308114d6137984df946333776d93a08fc21df66a",
-    # isomer's: a wasi-threads SDK beside the single-threaded one (the
-    # WasmKit blue Visor's reactor is threaded; the web's is not). A copy of
-    # isomer's tools/patches file (patches of a root-only override are the
-    # root module's).
-    patch_strip = 1,
-    patches = [
-        "//tools/patches:rules_swift_wasm_threads_beside.patch",
-        # isomer's: C compiled for wasm gets the Swift SDK's clang resource
-        # directory, so swift_sqlite's amalgamation finds <stdarg.h> there.
-        "//tools/patches:rules_swift_wasm_clang_resource_dir.patch",
-    ],
-)
-
-# Isomer's fork of swift-foundation, from which isomer builds Foundation for
-# the web and Android (not in the Bazel Central Registry; the same commit
-# isomer pins).
-bazel_dep(name = "swift-foundation", version = "6.3.2")
-git_override(
-    module_name = "swift-foundation",
-    remote = "https://github.com/AttilaTheFun/swift-foundation.git",
-    commit = "b04a54975a53d4447ea6ccad0cf6c68e4e2685e0",
-)
+# isomer's forks of rules_swift and swift-foundation come by version from the
+# project's registry, as isomer asks for them; only its other root-only
+# overrides (flatbuffers' patches, rules_foreign_cc) are repeated below.
 
 # swift_ffi, swift_gpu and swift_map are part of the isomer module
 # (`@isomer//swift_ffi/...` and so on): the one isomer commit above pins them.
 
-# SQLite: swift_sqlite 0.34 (public; the C API as CSQLite, the Swift layer
-# SwiftSQLite; renamed swift_sql in 0.35, which visor takes in 0.36), a Swift
-# package that visor's rules_swift_package_manager graph brings in
-# (@swiftpkg_swift_sqlite), as it brings agent_ui. Its C builds for
-# wasm with the rules_swift patch below (the SDK's clang resource directory).
+# SQLite: swift_sql (public; the C API as CSwiftSQL, the Swift layer
+# SwiftSQL), a Swift package that visor's rules_swift_package_manager graph
+# brings in, as it brings agent_ui. Its C builds for wasm with the registry
+# rules_swift's patch (the SDK's clang resource directory).
 
 # flatbuffers' released Swift BUILD glob misses Sources/FlatBuffers/Vectors/
 # and its Foundation use breaks under WASI — same patches isomer applies.

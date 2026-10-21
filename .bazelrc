@@ -1,5 +1,11 @@
 common --enable_bzlmod
 
+# Modules from the project's registry first (visor and isomer by their
+# releases' versions, and the forks isomer needs), then the Bazel Central
+# Registry.
+common --registry=https://raw.githubusercontent.com/AttilaTheFun/bazel_registry/main
+common --registry=https://bcr.bazel.build
+
 # isomer's hermetic Android NDK/SDK (needed to resolve its toolchains,
 # even when only building for Apple platforms).
 common --repo_env=ACCEPTED_ANDROID_NDK_LICENSE_VERSION=r27c
